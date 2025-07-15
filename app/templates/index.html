@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat with your Data</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Updated Plotly.js to a specific, recent version -->
+    <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #f8f9fa; }
+        .chat-window { height: 60vh; overflow-y: auto; border: 1px solid #dee2e6; border-radius: 0.5rem; padding: 1rem; background-color: white; }
+        .message { margin-bottom: 1rem; display: flex; flex-direction: column; }
+        .user-message { align-items: flex-end; }
+        .bot-message { align-items: flex-start; }
+        .content { padding: 0.75rem 1rem; border-radius: 0.75rem; max-width: 95%; word-wrap: break-word; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+        .user-message .content { background-color: #0d6efd; color: white; }
+        .bot-message .content { background-color: #e9ecef; color: black; overflow-x: auto; }
+        .bot-message .content table { width: 100%; margin-top: 0.5rem; font-size: 0.9rem; background-color: white; }
+        .loading-spinner { display: none; }
+        .suggestion-box { cursor: pointer; transition: background-color 0.2s; }
+        .suggestion-box:hover { background-color: #dbeafe; }
+        .nav-tabs .nav-link { cursor: pointer; }
+        #analysis-results { max-height: 400px; overflow-y: auto; }
+        .corr-matrix td { text-align: center; }
+    </style>
+</head>
+<body class="bg-gray-100">
+    <div class="container mx-auto p-4 md:p-8">
+        <header class="text-center mb-8">
+            <h1 class="text-4xl font-bold text-gray-800">Data Analytics Assistant</h1>
+            <p class="text-gray-600 mt-2">Upload up to 3 CSV or Parquet files to begin.</p>
+        </header>
+
+        <!-- Data Loading Section -->
+        <div class="card mb-4 shadow-sm">
+            <div class="card-body">
+                <h5 class="card-title">1. Upload Your Data File(s)</h5>
+                <form id="upload-form" class="flex flex-col sm:flex-row items-center gap-3">
+                    <input type="file" id="file-input" class="form-control" required multiple>
+                    <button type="submit" class="btn btn-primary w-full sm:w-auto">Upload and Load</button>
+                </form>
+                <div class="form-text">You can select up to 3 files. A new upload will clear previous data.</div>
+                <div id="upload-status" class="mt-3"></div>
+            </div>
+        </div>
+        
+        <!-- Data Analysis Section with Tabs -->
+        <div id="analysis-section" class="card mb-4 shadow-sm" style="display: none;">
+            <div class="card-header">
+                <ul class="nav nav-tabs card-header-tabs" id="analysis-tabs" role="tablist">
+                    <!-- Tabs will be dynamically inserted here -->
+                </ul>
+            </div>
+            <div class="card-body">
+                <div class="tab-content" id="analysis-tab-content">
+                    <!-- Tab panes will be dynamically inserted here -->
+                </div>
+            </div>
+        </div>
+
+        <!-- SQL Query Suggestions Section -->
+        <div id="suggestion-section" class="card mb-4 shadow-sm" style="display: none;">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-center">
+                    <h5 class="card-title mb-0">SQL Query Suggestions</h5>
+                    <button id="refresh-suggestions-btn" class="btn btn-sm btn-outline-secondary" title="Refresh Suggestions">&#x21bb;</button>
+                </div>
+                <p class="card-subtitle mt-1 mb-2 text-muted">Click a suggestion to try it in the SQL query box.</p>
+                <div id="query-suggestions" class="space-y-2"></div>
+            </div>
+        </div>
+
+        <div class="grid md:grid-cols-2 gap-4">
+            <!-- Natural Language Chat Section -->
+            <div class="card shadow-sm">
+                <div class="card-body d-flex flex-column">
+                    <h5 class="card-title">2. Ask a Question (Natural Language)</h5>
+                    <p class="text-sm text-muted">Note: Chat currently targets the first uploaded table.</p>
+                    <div id="chat-window" class="chat-window mb-3 flex-grow-1"></div>
+                    <div id="chat-loading" class="text-center mb-2 loading-spinner">...</div>
+                    <div class="flex flex-col gap-2">
+                        <input type="text" id="chat-input" class="form-control" placeholder="e.g., show 10 rows">
+                        <div class="flex gap-2">
+                            <button id="chat-execute-btn" class="btn btn-dark w-1/2">Send</button>
+                            <button id="chat-visualize-btn" class="btn btn-secondary w-1/2">Visualize</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Direct SQL Query Section -->
+            <div class="card shadow-sm">
+                <div class="card-body d-flex flex-column">
+                    <h5 class="card-title">3. Execute Direct SQL Query</h5>
+                    <div id="sql-window" class="chat-window mb-3 flex-grow-1"></div>
+                    <div id="sql-loading" class="text-center mb-2 loading-spinner">...</div>
+                    <div class="flex flex-col gap-2">
+                        <input type="text" id="sql-input" class="form-control" placeholder="e.g., SELECT * FROM my_table LIMIT 5">
+                        <div class="flex gap-2">
+                            <button id="sql-execute-btn" class="btn btn-info w-1/2">Execute</button>
+                            <button id="sql-visualize-btn" class="btn btn-secondary w-1/2">Visualize</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const uploadStatusDiv = document.getElementById('upload-status');
+        const analysisSection = document.getElementById('analysis-section');
+        const analysisTabs = document.getElementById('analysis-tabs');
+        const analysisTabContent = document.getElementById('analysis-tab-content');
+        let chartCounter = 0; // Counter for unique chart IDs
+
+        function setUploadStatus(message, type) {
+            uploadStatusDiv.textContent = message;
+            uploadStatusDiv.className = `alert alert-${type}`;
+        }
+        
+        document.getElementById('upload-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const fileInput = document.getElementById('file-input');
+            if (fileInput.files.length === 0) {
+                setUploadStatus('Please select at least one file.', 'warning');
+                return;
+            }
+            if (fileInput.files.length > 3) {
+                setUploadStatus('You can only upload a maximum of 3 files.', 'warning');
+                return;
+            }
+
+            const formData = new FormData();
+            for (const file of fileInput.files) {
+                formData.append('files', file);
+            }
+            
+            setUploadStatus('Uploading and processing...', 'info');
+            analysisSection.style.display = 'none';
+            document.getElementById('suggestion-section').style.display = 'none';
+            
+            try {
+                const response = await fetch('/upload', { method: 'POST', body: formData });
+                const result = await response.json();
+                if (response.ok) {
+                    setUploadStatus(result.message, 'success');
+                    analysisSection.style.display = 'block';
+                    buildAnalysisTabs(result.tables);
+                    fetchQuerySuggestions();
+                } else {
+                    setUploadStatus(`Error: ${result.error}`, 'danger');
+                }
+            } catch (error) {
+                setUploadStatus('An unexpected error occurred.', 'danger');
+            }
+        });
+        
+        function buildAnalysisTabs(tables) {
+            analysisTabs.innerHTML = '';
+            analysisTabContent.innerHTML = '';
+            tables.forEach((table, index) => {
+                const isActive = index === 0;
+                // Create Tab Button
+                const tabButton = document.createElement('li');
+                tabButton.className = 'nav-item';
+                tabButton.innerHTML = `<button class="nav-link ${isActive ? 'active' : ''}" id="tab-${table.table_name}" data-bs-toggle="tab" data-bs-target="#pane-${table.table_name}" type="button" role="tab">${table.original_name}</button>`;
+                analysisTabs.appendChild(tabButton);
+
+                // Create Tab Pane
+                const tabPane = document.createElement('div');
+                tabPane.className = `tab-pane fade ${isActive ? 'show active' : ''}`;
+                tabPane.id = `pane-${table.table_name}`;
+                tabPane.role = 'tabpanel';
+                tabPane.innerHTML = `
+                    <div class="btn-group mt-2" role="group">
+                        <button class="btn btn-outline-primary" onclick="fetchSchema('${table.table_name}')">View Schema</button>
+                        <button class="btn btn-outline-primary" onclick="fetchDataQuality('${table.table_name}')">Check Data Quality</button>
+                        <button class="btn btn-outline-primary" onclick="fetchCorrelationMatrix('${table.table_name}')">Correlation Matrix</button>
+                    </div>
+                    <div id="results-${table.table_name}" class="mt-3 p-3 bg-light border rounded" style="display: none;"></div>
+                `;
+                analysisTabContent.appendChild(tabPane);
+            });
+        }
+
+        async function fetchSchema(tableName) {
+            const resultsDiv = document.getElementById(`results-${tableName}`);
+            resultsDiv.style.display = 'block';
+            resultsDiv.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm" role="status"></div></div>';
+            try {
+                const response = await fetch(`/get_schema/${tableName}`);
+                const data = await response.json();
+                if (response.ok) {
+                    let tableHtml = '<h6>Schema</h6><table class="table table-sm table-bordered"><thead><tr><th>Column Name</th><th>Data Type</th></tr></thead><tbody>';
+                    data.forEach(row => {
+                        tableHtml += `<tr><td>${row.column_name}</td><td>${row.column_type}</td></tr>`;
+                    });
+                    tableHtml += '</tbody></table>';
+                    resultsDiv.innerHTML = tableHtml;
+                } else {
+                    resultsDiv.innerHTML = `<div class="alert alert-warning">${data.error}</div>`;
+                }
+            } catch (error) {
+                resultsDiv.innerHTML = `<div class="alert alert-danger">Error fetching schema.</div>`;
+            }
+        }
+
+        async function fetchDataQuality(tableName) {
+            const resultsDiv = document.getElementById(`results-${tableName}`);
+            resultsDiv.style.display = 'block';
+            resultsDiv.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm" role="status"></div></div>';
+            try {
+                const response = await fetch(`/get_data_quality/${tableName}`);
+                const data = await response.json();
+                if (response.ok) {
+                    let reportHtml = `<h6>Data Quality for <strong>${tableName}</strong></h6>`;
+                    reportHtml += `<p><strong>Total Rows:</strong> ${data.total_rows} | <strong>Duplicate Rows:</strong> ${data.duplicate_rows}</p>`;
+                    
+                    if (Object.keys(data.numerical_stats).length > 0) {
+                        reportHtml += `<h6>Numerical Column Analysis</h6><table class="table table-sm table-bordered"><thead><tr><th>Column</th><th>Min</th><th>Max</th><th>Average</th><th>Std. Dev.</th></tr></thead><tbody>`;
+                        for(const [col, stats] of Object.entries(data.numerical_stats)) {
+                            reportHtml += `<tr><td>${col}</td><td>${stats.min}</td><td>${stats.max}</td><td>${stats.avg}</td><td>${stats.std_dev}</td></tr>`;
+                        }
+                        reportHtml += `</tbody></table>`;
+                    }
+
+                    if (Object.keys(data.categorical_stats).length > 0) {
+                        reportHtml += `<h6>Categorical Column Analysis</h6><table class="table table-sm table-bordered"><thead><tr><th>Column</th><th>Distinct Values</th></tr></thead><tbody>`;
+                        for(const [col, stats] of Object.entries(data.categorical_stats)) {
+                            reportHtml += `<tr><td>${col}</td><td>${stats.distinct_values}</td></tr>`;
+                        }
+                        reportHtml += `</tbody></table>`;
+                    }
+
+                    reportHtml += `<h6>Null Values per Column:</h6><ul>`;
+                    let hasNulls = false;
+                    for (const [col, count] of Object.entries(data.null_counts)) {
+                        if (count > 0) {
+                           reportHtml += `<li><strong>${col.replace('_nulls', '')}:</strong> ${count} nulls</li>`;
+                           hasNulls = true;
+                        }
+                    }
+                    if (!hasNulls) {
+                        reportHtml += `<li>No null values found.</li>`;
+                    }
+                    reportHtml += `</ul>`;
+
+                    resultsDiv.innerHTML = reportHtml;
+                } else {
+                    resultsDiv.innerHTML = `<div class="alert alert-warning">${data.error}</div>`;
+                }
+            } catch (error) {
+                resultsDiv.innerHTML = `<div class="alert alert-danger">Error fetching data quality report.</div>`;
+            }
+        }
+
+        async function fetchCorrelationMatrix(tableName) {
+            const resultsDiv = document.getElementById(`results-${tableName}`);
+            resultsDiv.style.display = 'block';
+            resultsDiv.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm" role="status"></div></div>';
+            try {
+                const response = await fetch(`/get_correlation/${tableName}`);
+                const data = await response.json();
+                if (data.error) {
+                    resultsDiv.innerHTML = `<div class="alert alert-warning">${data.error}</div>`;
+                    return;
+                }
+
+                let reportHtml = `<h6>Correlation Matrix for <strong>${tableName}</strong></h6>`;
+                if (Object.keys(data).length > 0) {
+                    reportHtml += `<div class="table-responsive"><table class="table table-sm table-bordered corr-matrix"><thead><tr><th></th>`;
+                    const cols = Object.keys(data);
+                    cols.forEach(col => reportHtml += `<th>${col}</th>`);
+                    reportHtml += `</tr></thead><tbody>`;
+                    cols.forEach(col1 => {
+                        reportHtml += `<tr><th>${col1}</th>`;
+                        cols.forEach(col2 => {
+                            const val = data[col1][col2];
+                            let displayVal = val;
+                            let color = 'white';
+                            if (typeof val === 'number') {
+                                displayVal = val.toFixed(2);
+                                color = val > 0.7 ? '#d4edda' : (val < -0.7 ? '#f8d7da' : 'white');
+                            }
+                            reportHtml += `<td style="background-color:${color};">${displayVal}</td>`;
+                        });
+                        reportHtml += `</tr>`;
+                    });
+                    reportHtml += `</tbody></table></div>`;
+                } else {
+                    reportHtml += `<p>No correlation matrix could be generated. This usually means there are fewer than two numerical columns in the data.</p>`;
+                }
+                
+                resultsDiv.innerHTML = reportHtml;
+            } catch (e) {
+                resultsDiv.innerHTML = `<div class="alert alert-danger">Error fetching correlation matrix.</div>`;
+            }
+        }
+
+        document.getElementById('refresh-suggestions-btn').addEventListener('click', fetchQuerySuggestions);
+
+        async function fetchQuerySuggestions() {
+            const section = document.getElementById('suggestion-section');
+            const container = document.getElementById('query-suggestions');
+            container.innerHTML = '<div class="text-center"><div class="spinner-border spinner-border-sm" role="status"></div></div>';
+            section.style.display = 'block';
+            try {
+                const response = await fetch('/get_suggestions');
+                const suggestions = await response.json();
+                container.innerHTML = '';
+                if (response.ok) {
+                    suggestions.forEach(query => {
+                        const el = document.createElement('div');
+                        el.className = 'p-2 mb-2 bg-light border rounded suggestion-box';
+                        el.textContent = query;
+                        el.onclick = () => { document.getElementById('sql-input').value = query; };
+                        container.appendChild(el);
+                    });
+                } else {
+                    container.innerHTML = `<div class="alert alert-warning">${suggestions.error}</div>`;
+                }
+            } catch (error) {
+                container.innerHTML = `<div class="alert alert-danger">Error fetching suggestions.</div>`;
+            }
+        }
+
+        function addMessageToWindow(response, sender, windowId) {
+            const chatWindow = document.getElementById(windowId);
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${sender}-message`;
+            
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'content';
+
+            let chartDivId = null;
+            let chartData = null;
+
+            if (sender === 'user') {
+                contentDiv.innerHTML = new Option(response).innerHTML;
+            } else { // sender === 'bot'
+                contentDiv.innerHTML = response.table || '';
+                
+                if (response.chart) {
+                    chartCounter++;
+                    chartDivId = `chart-${chartCounter}`;
+                    chartData = response.chart;
+                    const chartContainer = document.createElement('div');
+                    chartContainer.id = chartDivId;
+                    chartContainer.className = 'mt-3';
+                    contentDiv.appendChild(chartContainer);
+                }
+            }
+
+            messageDiv.appendChild(contentDiv);
+            chatWindow.appendChild(messageDiv);
+
+            // Render the chart only after its container is in the DOM
+            if (chartDivId && chartData) {
+                try {
+                    const layout = chartData.layout || {};
+                    layout.autosize = true; // Make chart responsive
+                    Plotly.newPlot(chartDivId, chartData.data, layout, {responsive: true});
+                } catch (e) {
+                    console.error("Error plotting chart:", e);
+                    const chartContainer = document.getElementById(chartDivId);
+                    if(chartContainer) {
+                        chartContainer.innerHTML = "<div class='alert alert-warning text-sm'>Could not render chart.</div>";
+                    }
+                }
+            }
+
+            chatWindow.scrollTop = chatWindow.scrollHeight;
+        }
+
+        async function handleQuery(source, action) { // source: 'chat' or 'sql', action: 'execute' or 'visualize'
+            const inputEl = document.getElementById(`${source}-input`);
+            const windowId = `${source}-window`;
+            const loadingEl = document.getElementById(`${source}-loading`);
+            const query = inputEl.value.trim();
+
+            if (!query) return;
+
+            addMessageToWindow(query, 'user', windowId);
+            if (source === 'chat') {
+                inputEl.value = '';
+            }
+            loadingEl.style.display = 'block';
+
+            const endpoint = action === 'execute' ? '/execute' : '/visualize';
+            const body = { query: query, type: source };
+
+            try {
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                const result = await response.json();
+
+                let botResponse = {};
+                if (action === 'execute') {
+                    botResponse.table = result.table;
+                } else { // visualize
+                    if (result.error) {
+                        botResponse.table = `<div class='alert alert-warning'>${result.error}</div>`;
+                    } else {
+                        botResponse.chart = result.chart;
+                    }
+                }
+                addMessageToWindow(botResponse, 'bot', windowId);
+
+            } catch (error) {
+                console.error("Fetch failed:", error);
+                addMessageToWindow({ table: 'Failed to get a response from the server.' }, 'bot', windowId);
+            } finally {
+                loadingEl.style.display = 'none';
+            }
+        }
+
+        // Event Listeners for new buttons
+        document.getElementById('chat-execute-btn').addEventListener('click', () => handleQuery('chat', 'execute'));
+        document.getElementById('chat-visualize-btn').addEventListener('click', () => handleQuery('chat', 'visualize'));
+        document.getElementById('sql-execute-btn').addEventListener('click', () => handleQuery('sql', 'execute'));
+        document.getElementById('sql-visualize-btn').addEventListener('click', () => handleQuery('sql', 'visualize'));
+
+    </script>
+</body>
+</html>
